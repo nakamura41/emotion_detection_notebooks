@@ -7,9 +7,8 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 # The GPU id to use, usually either "0" or "1"
-os.environ["CUDA_VISIBLE_DEVICES"]="1,2,3"
+os.environ["CUDA_VISIBLE_DEVICES"]="2"
 os.environ["TFHUB_CACHE_DIR"]="tfhub_modules"
-
 
 import tensorflow as tf
 from keras import backend as K
@@ -17,11 +16,10 @@ print(tf.__version__)
 print(K.tensorflow_backend._get_available_gpus())
 
 
-# In[11]:
+# In[2]:
 
 
 import os
-import logging
 import pandas as pd
 import numpy as np
 import tensorflow_hub as hub
@@ -30,11 +28,13 @@ from keras.engine import Layer
 import keras.layers as layers
 from keras.models import Model, load_model
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, accuracy_score
 import matplotlib.pyplot as plt
+import seaborn as sns
+import logging
 
 
 logging.basicConfig(level=logging.DEBUG, format='%(name)s - %(levelname)s - %(message)s')
-
 
 # Initialize session
 sess = tf.Session()
@@ -80,7 +80,9 @@ class ISEARDataset(object):
   def load_data(self):
     train_data = None
     test_data = None
+
     data = self.__load_data_file()
+
     train_data, test_data = train_test_split(data, test_size=0.3, random_state=self.RANDOM_STATE, stratify=data["emotion"].values)
     return train_data, test_data
 
@@ -113,7 +115,7 @@ for emotion in labels:
   test_data.loc[test_data.emotion == emotion, "emotion_int"] = dic[emotion]
 
 bins = list(range(0, n_classes + 1))
-logging.debug("bins: %s" % bins)
+print("bins:", bins)
 hist, _ = np.histogram(train_data["emotion_int"], bins=bins)
 
 y_pos = np.arange(len(labels))
@@ -184,28 +186,42 @@ def build_model():
   pred = layers.Dense(n_classes, activation='sigmoid')(dense)
 
   model = Model(inputs=[input_text], outputs=pred)
-
-  model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
   model.summary()
 
   return model
 
 
-# In[ ]:
+# In[10]:
 
 
 import datetime
+from keras.optimizers import Adam, Adadelta, RMSprop
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+
 
 start_time = datetime.datetime.now()
 
 # Build and fit
 model = build_model()
 
-model.fit(X_train,
-          y_train,
-          validation_data=(X_val, y_val),
-          epochs=1,
-          batch_size=32)
+adam = Adam(lr=1e-3, decay=0.0)
+adadelta = Adadelta(lr=1.0, rho=0.95, epsilon=None, decay=0.0)
+rmsprop = RMSprop(lr=0.001, rho=0.9, epsilon=None, decay=0.0)
+
+filepath="tmp/weights-{epoch:02d}-{val_acc:.2f}.hdf5"
+model_checkpoint = ModelCheckpoint(filepath, monitor='val_acc', verbose=1, save_best_only=True, mode='auto')
+early_stopping = EarlyStopping(monitor='val_loss', patience=10)
+callbacks = [early_stopping, model_checkpoint]
+
+model.compile(loss='categorical_crossentropy', optimizer=adam, metrics=['accuracy'])
+
+history = model.fit(X_train,
+                    y_train,
+                    batch_size=32,
+                    epochs=100,
+                    verbose=1,
+                    validation_data=(X_val, y_val),
+                    callbacks=callbacks)  # starts training
 
 end_time = datetime.datetime.now()
 
@@ -216,11 +232,168 @@ elapsed_time = end_time - start_time
 logging.debug("%d days, %d hours, %d minutes, %d seconds elapsed" % (days_hours_minutes_seconds(elapsed_time)))
 
 
-# In[ ]:
+# In[11]:
 
 
 model.save('isear_dense_elmo_model.h5')
 model.save_weights('isear_dense_elmo_weights.h5')
 
 logging.debug("model and weights is successfully saved")
+
+
+# ## Evaluate the model
+
+# In[12]:
+
+
+y_pred = model.predict(X_test)
+
+y_pred_original = [labels[val] for val in np.argmax(y_pred, axis=1).squeeze()]
+y_test_original = np.asarray(test_data.emotion)
+
+
+# In[13]:
+
+
+def print_confusion_matrix(confusion_matrix, class_names, figsize = (4,3), fontsize=15):
+    """Prints a confusion matrix, as returned by sklearn.metrics.confusion_matrix, as a heatmap.
+
+    Arguments
+    ---------
+    confusion_matrix: numpy.ndarray
+        The numpy.ndarray object returned from a call to sklearn.metrics.confusion_matrix. 
+        Similarly constructed ndarrays can also be used.
+    class_names: list
+        An ordered list of class names, in the order they index the given confusion matrix.
+    figsize: tuple
+        A 2-long tuple, the first value determining the horizontal size of the ouputted figure,
+        the second determining the vertical size. Defaults to (10,7).
+    fontsize: int
+        Font size for axes labels. Defaults to 14.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The resulting confusion matrix figure
+    """
+    df_cm = pd.DataFrame(
+        confusion_matrix, index=class_names, columns=class_names, 
+    )
+    fig = plt.figure(figsize=figsize)
+    try:
+        heatmap = sns.heatmap(df_cm, annot=True, fmt="d")
+    except ValueError:
+        raise ValueError("Confusion matrix values must be integers.")
+    heatmap.yaxis.set_ticklabels(heatmap.yaxis.get_ticklabels(), rotation=0, ha='right', fontsize=fontsize)
+    heatmap.xaxis.set_ticklabels(heatmap.xaxis.get_ticklabels(), rotation=45, ha='right', fontsize=fontsize)
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    return fig
+
+
+# In[14]:
+
+
+cf_matrix = confusion_matrix(y_test_original, y_pred_original, labels=labels)
+
+df_cm = pd.DataFrame(
+    cf_matrix, index=labels, columns=labels,
+)
+
+df_cm
+
+
+# In[15]:
+
+
+print(print_confusion_matrix(cf_matrix, class_names=labels))
+
+
+# In[16]:
+
+
+test_accuracy = accuracy_score(y_test_original, y_pred_original)
+print("test accuracy:", test_accuracy)
+
+
+# ### Performance score for each classes
+
+# In[17]:
+
+
+precision, recall, fscore, support = precision_recall_fscore_support(y_test_original, y_pred_original)
+score_dict = {
+  "precision": precision.round(4),
+  "recall": recall.round(4),
+  "f1-score": fscore.round(4),
+  "support": support.round(4)
+}
+score_df = pd.DataFrame(score_dict, index=labels)
+score_df
+
+
+# ### Performance score using micro average
+
+# In[18]:
+
+
+precision, recall, fscore, support = precision_recall_fscore_support(y_test_original, y_pred_original, average="micro")
+score_dict = {
+  "precision": precision.round(4),
+  "recall": recall.round(4),
+  "f1-score": fscore.round(4),
+  "support": support
+}
+score_df = pd.DataFrame(score_dict, index=["score"])
+score_df
+
+
+# ### Performance score using macro average
+
+# In[19]:
+
+
+precision, recall, fscore, support = precision_recall_fscore_support(y_test_original, y_pred_original, average="macro")
+score_dict = {
+  "precision": precision.round(4),
+  "recall": recall.round(4),
+  "f1-score": fscore.round(4),
+  "support": support
+}
+score_df = pd.DataFrame(score_dict, index=["score"])
+score_df
+
+
+# ### Performance score using weighted average
+
+# In[20]:
+
+
+precision, recall, fscore, support = precision_recall_fscore_support(y_test_original, y_pred_original, average="weighted")
+score_dict = {
+  "precision": precision.round(4),
+  "recall": recall.round(4),
+  "f1-score": fscore.round(4),
+  "support": support
+}
+score_df = pd.DataFrame(score_dict, index=["score"])
+score_df
+
+
+# ### Cohen Kappa Score
+
+# In[21]:
+
+
+from sklearn.metrics import cohen_kappa_score
+
+kappa_score = cohen_kappa_score(y_test_original, y_pred_original, labels=labels)
+print("kappa:", kappa_score)
+
+
+# In[ ]:
+
+
+
+
 
