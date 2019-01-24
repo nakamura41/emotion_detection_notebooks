@@ -109,3 +109,4 @@ venv.bak/
 tmp/
 .ipynb_checkpoints/
 tfhub_modules/
+bert/
