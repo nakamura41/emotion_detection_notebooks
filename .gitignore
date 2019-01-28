@@ -106,6 +106,8 @@ venv.bak/
 # saved files
 *.npy
 *.h5
+*.pt
 tmp/
 .ipynb_checkpoints/
 tfhub_modules/
+bert/
